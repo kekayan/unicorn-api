@@ -1,7 +1,7 @@
 [project]
 name = "unicorn-api"
 version = "0.1.0"
-description = "Add your description here"
+description = "stream data from a unicorn to websocket"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
