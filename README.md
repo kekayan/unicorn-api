@@ -1,6 +1,10 @@
 # Unicorn 
 
 
+## setup
+
+* add the `libunicorn.so` to `app/unicorn` directory.
+
 ## create virtual env
 `uv venv`
 
