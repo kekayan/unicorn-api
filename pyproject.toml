@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.4.0",
     "pydantic>=2.9.0",
     "pyserial>=3.5",
+    "python-dotenv>=1.0.1",
     "python-picard>=0.7",
     "scipy>=1.14.1",
     "setuptools>=74.1.2",

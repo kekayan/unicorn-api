@@ -1,94 +1,244 @@
-import logging
-from contextlib import contextmanager
+import os
+import serial
+import asyncio
+import struct
+import threading
+import numpy as np
+from scipy.signal import welch
 from fastapi import FastAPI, WebSocket
 from fastapi.websockets import WebSocketDisconnect, WebSocketState
-import asyncio
-import threading
+
+from dotenv import load_dotenv
+
+from .eeg_utils import butter_bandpass_filter, apply_notch_filter
+
 from queue import Queue
-import json
-import numpy as np
 
-from .unicorn import unicorn
-from .eeg_utils import extract_eeg_bands
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+from dotenv import load_dotenv
 
-device_serial = None
+load_dotenv()
+
+
+device='/dev/rfcomm0'
+
+blocksize=0.2
+timeout=5
+nchan=16
+fsample=250
+
+start_acq      = [0x61, 0x7C, 0x87]
+stop_acq       = [0x63, 0x5C, 0xC5]
+start_response = [0x00, 0x00, 0x00]
+stop_response  = [0x00, 0x00, 0x00]
+start_sequence = [0xC0, 0x00]
+stop_sequence  = [0x0D, 0x0A]
+
+
+
 
 app = FastAPI()
 
-UNICORN_DEVICE_SERIAL_ID = "UN-2022.03.09"
+async def run_sudo_command(*args):
+    sudo_password = os.environ.get("SUDO_PASSWORD")
+    if not sudo_password:
+        raise ValueError("SUDO_PASSWORD environment variable is not set")
 
-def eeg_band_power_extract(data, sampling_freq=250):
-    data = data[:, :8]
-    data = np.asarray(data)
-    # with open('data_new_unicorn2.txt', 'a') as f:
-    #     np.savetxt(f, data)
-    extracted_features = extract_eeg_bands(data)
-    logger.info(f"Extracted features: {extracted_features}")
-    return extracted_features
+    process = await asyncio.create_subprocess_exec(
+        "sudo", "-S", *args,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
 
+    stdout, stderr = await process.communicate(input=f"{sudo_password}\n".encode())
 
-@contextmanager
-def unicorn_device(serial_id):
-    device = None
+    if process.returncode != 0:
+        raise RuntimeError(f"Command failed: {stderr.decode()}")
+
+    return stdout.decode()
+
+def data_acquisition(data_queue, stop_event):
     try:
-        device = unicorn.open_device(serial_id)
-        yield device
-    finally:
-        if device:
-            unicorn.close_device(device)
+        s = serial.Serial(device, 115200, timeout=timeout)
+        print("connected to serial port " + device)
+    except:
+        raise RuntimeError("cannot connect to serial port " + device)
 
-def scan_and_connect():
-    logger.info(f"Unicorn API Version: {unicorn.get_api_version()}")
-    logger.info("Scanning for devices...")
+    # start the Unicorn data stream
+    s.write(start_acq)
+    buffer = []
+    count = 0
+    response = s.read(3)
+    if response != b'\x00\x00\x00':
+        raise RuntimeError("cannot start data stream")
 
-    available_devices = unicorn.get_available_devices()
+    print('started Unicorn')
+    data_queue.put({
+        "type": "started"
+    })
 
-    if not available_devices:
-        logger.warning("No devices found")
-        return None
+    while not stop_event.is_set():
 
-    logger.info(f"Available Devices: {available_devices}")
 
-    if UNICORN_DEVICE_SERIAL_ID not in available_devices:
-        logger.error(f"Device with serial {UNICORN_DEVICE_SERIAL_ID} not found")
-        return None
+        try:
+            # read one block of data from the serial port
+            payload = s.read(45)
 
-    return UNICORN_DEVICE_SERIAL_ID
 
-def acquire_data_thread(device, data_queue, stop_event):
-    try:
-        logger.info("Starting acquisition...")
-        unicorn.start_acquisition(device, True)
-        buffer = []
-        count = 0
-        while not stop_event.is_set():
-            data = unicorn.get_data(device, 1)
-            buffer.append(data)
+            # check the start and end bytes
+            if payload[0:2] != b'\xC0\x00':
+                raise RuntimeError("invalid packet")
+            if payload[43:45] != b'\x0D\x0A':
+                raise RuntimeError("invalid packet")
+
+            battery = 100*float(payload[2] & 0x0F)/15
+
+            eeg = np.zeros(8)
+            for ch in range(0,8):
+                # unpack as a big-endian 32 bit signed integer
+                eegv = struct.unpack('>i', b'\x00' + payload[(3+ch*3):(6+ch*3)])[0]
+                # apply two’s complement to the 32-bit signed integral value if the sign bit is set
+                if (eegv & 0x00800000):
+                    eegv = eegv | 0xFF000000
+                eeg[ch] = float(eegv) * 4500000. / 50331642.
+
+            buffer.append(eeg)
+
+            # accel = np.zeros(3)
+            # # unpack as a little-endian 16 bit signed integer
+            # accel[0] = float(struct.unpack('<h', payload[27:29])[0]) / 4096.
+            # accel[1] = float(struct.unpack('<h', payload[29:31])[0]) / 4096.
+            # accel[2] = float(struct.unpack('<h', payload[31:33])[0]) / 4096.
+
+            # gyro = np.zeros(3)
+            # # unpack as a little-endian 16 bit signed integer
+            # gyro[0] = float(struct.unpack('<h', payload[27:29])[0]) / 32.8
+            # gyro[1] = float(struct.unpack('<h', payload[29:31])[0]) / 32.8
+            # gyro[2] = float(struct.unpack('<h', payload[31:33])[0]) / 32.8
+
+            counter = struct.unpack('<L', payload[39:43])[0]
+
+            # collect the data that will be sent to LSL
+            # dat[0:8]   = eeg
+            # dat[8:11]  = accel
+            # dat[11:14] = gyro
+            # dat[14]    = battery
+            # dat[15]    = counter
+
+
+
             if len(buffer) == 1000:
                 if count == 0:
-                    buffer = []
                     count += 1
-                    logger.debug("skipping for the first time")
+                    buffer = []
                     continue
-                eeg_bands = eeg_band_power_extract(np.array(buffer))
+                buffer = np.array(buffer)
+                print("time to process")
 
-                data_queue.put(json.dumps(eeg_bands))
-                logger.debug("Data sent to queue")
-                buffer.clear()
+                mean_across_channels = np.mean(buffer, axis=1, keepdims=True)
+                data_car = buffer - mean_across_channels
+                data = data_car
+                fs = 250  # Sample rate, Hz
+                lowcut = 1
+                highcut = 60
+                notch_freq = 50  # Frequency to be notched out
+
+                # Apply filters
+                filtered_data = np.apply_along_axis(butter_bandpass_filter, 0, data, lowcut, highcut, fs)
+                filtered_data = np.apply_along_axis(apply_notch_filter, 0, filtered_data, notch_freq, fs)
+
+
+
+
+                # eeg = data_car.T
+
+                # ch_names = ["Fz", "C3", "Cz", "C4", "Pz", "PO7", "Oz", "PO8"]
+                # info = mne.create_info(ch_names, 250, ch_types=["eeg"] * 8)
+                # raw = mne.io.RawArray(eeg, info)
+                # raw.set_montage('standard_1020', on_missing='warn')
+
+                # raw_tmp = raw.copy()
+                # raw_tmp.filter(l_freq=5, h_freq=None)
+
+                # ica = mne.preprocessing.ICA(n_components=0.999999,method="picard",fit_params={"extended": True}, random_state=1)
+                # ica.fit(raw_tmp)
+
+                # ica.plot_components(inst=raw_tmp,show=False).savefig(f'imgs/ica_components_{time.time()}.png')
+                # ica.plot_sources(inst=raw_tmp, show=False).savefig(f'imgs/ica_sources_{time.time()}.png')
+
+                bands = {
+                'Theta': (4, 8),
+                'Alpha': (8, 12),
+                'Beta': (12, 30),
+                'Gamma': (30, 60)
+                }
+                band_power = {band: [] for band in bands}
+
+                # Calculate PSD for each band
+                for i in range(data.shape[1]):
+                    freqs, psd = welch(data[:, i], 250, nperseg=128)
+                    for band, (low, high) in bands.items():
+                        # Find intersecting values
+                        idx_band = np.logical_and(freqs >= low, freqs <= high)
+                        band_power[band].append(psd[idx_band].sum())  # Sum PSD within the band
+
+                data_queue.put({
+                    "type": "band_power",
+                    "data": band_power
+                })
+                print("add band power")
+
+                # fig, axes = plt.subplots(nrows=len(bands), figsize=(10, 10))
+
+                # for i, (band, powers) in enumerate(band_power.items()):
+                #     axes[i].bar(ch_names, powers, color='skyblue')
+                #     axes[i].set_ylabel(f'{band} band power')
+                # axes[-1].set_xlabel('Channels')
+                # plt.tight_layout()
+                # # plt.show()
+
+                # plt.savefig(f'imgs/band_power_{time.time()}.png')
+                average_band_power_without_norm = {band: np.mean(powers) for band, powers in band_power.items()}
+
+                data_queue.put({
+                    "type": "average_band_power",
+                    "data": average_band_power_without_norm
+                })
+                print("add average band power")
+
+                # 2
+                # fig, axes = plt.subplots(ncols=len(bands), figsize=(12, 6), sharey=True)  # Share the y-axis across subplots
+
+                # colors = ['skyblue', 'lightgreen', 'lightcoral', 'plum']
+                # max_power = max(average_band_power_without_norm.values())
+
+                # for i, (band, powers) in enumerate(average_band_power_without_norm.items()):
+                #     axes[i].bar(band, powers, color=colors[i % len(colors)])
+                #     axes[i].set_ylim(0, max_power * 1.1)
+                #     axes[i].set_title(f'{band} Band Power')
+                #     axes[i].grid(True, which='both', axis='y')
+
+                # axes[-1].set_xlabel('Bands')
+                # plt.tight_layout()
+                # # plt.show()
+                # plt.savefig(f'imgs/band_power_avg_{time.time()}.png')
+
+                # send the data to file
+                # with open('data_new_unicorn_direct.txt', 'a') as f:
+                #     np.savetxt(f, eeg)
                 buffer = []
-    except Exception as e:
-        logger.exception(f"Error during data acquisition: {e}")
-    finally:
-        logger.debug("Stopping acquisition...")
-        try:
-            unicorn.stop_acquisition(device)
-            logger.debug("Acquisition stopped")
+
+            if ((counter % fsample) == 0):
+                print('received %d samples, battery %d %%' % (counter, battery))
+
         except Exception as e:
-            logger.error(f"Error stopping acquisition: {e}")
+            print(e)
+            print('closing')
+            s.write(stop_acq)
+            s.close()
+
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -96,49 +246,53 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.send_json({
         "type": "connected"
     })
-
-    device_serial = scan_and_connect()
-
-    if not device_serial:
+    try:
+        # Run the rfcomm connect command
+        print('connecting to rfcomm')
+        await run_sudo_command("rfcomm", "connect", "/dev/rfcomm0", "84:2E:14:09:EC:73")
+        print('connected to rfcomm')
+        # Run the chmod command
+        print('chmodding')
+        await run_sudo_command("chmod", "666", "/dev/rfcomm0")
+        print('chmodded')
+    except Exception as e:
+        print(f"Error setting up device: {e}")
         await websocket.close(code=1000)
         return
 
+    data_queue = Queue()
     stop_event = threading.Event()
-    acquisition_thread = None
+    acquisition_thread = threading.Thread(target=data_acquisition, args=(data_queue, stop_event))
+    acquisition_thread.start()
+
+    websocket_closed = False
 
     try:
-        with unicorn_device(device_serial) as device:
-            logger.info(f"Connected to {device_serial}")
+        while True:
+            if not data_queue.empty():
+                print('sending data')
+                data = data_queue.get()
+                await websocket.send_json(data)
+                print('sent data')
 
-            data_queue = Queue()
-            acquisition_thread = threading.Thread(target=acquire_data_thread, args=(device, data_queue, stop_event))
-            acquisition_thread.start()
+            # Add a small delay to prevent busy-waiting
+            await asyncio.sleep(0.01)
 
-            try:
-                while True:
-                    if not data_queue.empty():
-                        data = data_queue.get()
-                        await websocket.send_json({
-                            "data": data,
-                            "type": "band_power"
-                        })
-                        logger.debug("Data sent to client")
-                    else:
-                        await asyncio.sleep(0.01)
-            except WebSocketDisconnect:
-                logger.info("WebSocket disconnected")
-            finally:
-                # Stop the acquisition thread
-                stop_event.set()
-                acquisition_thread.join(timeout=5)
-                if acquisition_thread.is_alive():
-                    logger.warning("Acquisition thread did not stop in time")
+    except WebSocketDisconnect:
+        print('websocket disconnected')
+        websocket_closed = True
     except Exception as e:
-        logger.exception(f"An unexpected error occurred: {e}")
+        print(f"An error occurred: {e}")
     finally:
-        if stop_event:
-            stop_event.set()
+        print('closing')
+        stop_event.set()
         if acquisition_thread and acquisition_thread.is_alive():
             acquisition_thread.join(timeout=5)
-        if websocket.client_state != WebSocketState.DISCONNECTED:
+        # Disconnect rfcomm
+        try:
+            await run_sudo_command("rfcomm", "release", "/dev/rfcomm0")
+        except Exception as e:
+            print(f"Error disconnecting rfcomm: {e}")
+
+        if not websocket_closed and websocket.client_state != WebSocketState.DISCONNECTED:
             await websocket.close(code=1000)
