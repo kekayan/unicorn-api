@@ -40,23 +40,25 @@ stop_sequence  = [0x0D, 0x0A]
 app = FastAPI()
 
 async def run_sudo_command(*args):
-    sudo_password = os.environ.get("SUDO_PASSWORD")
-    if not sudo_password:
-        raise ValueError("SUDO_PASSWORD environment variable is not set")
+       sudo_password = os.environ.get("SUDO_PASSWORD")
+       if not sudo_password:
+           raise ValueError("SUDO_PASSWORD environment variable is not set")
 
-    process = await asyncio.create_subprocess_exec(
-        "sudo", "-S", *args,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
+       cmd = " ".join(["sudo", "-S"] + list(args))
+       process = await asyncio.create_subprocess_shell(
+           cmd,
+           stdin=asyncio.subprocess.PIPE,
+           stdout=asyncio.subprocess.PIPE,
+           stderr=asyncio.subprocess.PIPE,
+           shell=True
+       )
 
-    stdout, stderr = await process.communicate(input=f"{sudo_password}\n".encode())
+       stdout, stderr = await process.communicate(input=f"{sudo_password}\n".encode())
 
-    if process.returncode != 0:
-        raise RuntimeError(f"Command failed: {stderr.decode()}")
+       if process.returncode != 0:
+           raise RuntimeError(f"Command failed: {stderr.decode()}")
 
-    return stdout.decode()
+       return stdout.decode()
 
 def data_acquisition(data_queue, stop_event):
     try:
@@ -238,7 +240,13 @@ def data_acquisition(data_queue, stop_event):
             s.write(stop_acq)
             s.close()
 
-
+async def run_rfcomm():
+       process = await asyncio.create_subprocess_exec(
+           "sudo", "-S", "rfcomm", "connect", "/dev/rfcomm0", "84:2E:14:09:EC:73",
+           stdin=asyncio.subprocess.PIPE,
+           stdout=asyncio.subprocess.PIPE,
+           stderr=asyncio.subprocess.PIPE
+       )
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -247,14 +255,47 @@ async def websocket_endpoint(websocket: WebSocket):
         "type": "connected"
     })
     try:
+        # sudo rfcomm release /dev/rfcomm0
+        await websocket.send_json({
+            "type": "setting_up_device",
+            "message": "Releasing rfcomm0"
+        })
+        await run_sudo_command("rfcomm", "release", "/dev/rfcomm0")
+        await websocket.send_json({
+            "type": "setting_up_device",
+            "message": "Released rfcomm0"
+        })
         # Run the rfcomm connect command
+        await websocket.send_json({
+            "type": "setting_up_device",
+            "message": "Connecting to rfcomm"
+        })
         print('connecting to rfcomm')
-        await run_sudo_command("rfcomm", "connect", "/dev/rfcomm0", "84:2E:14:09:EC:73")
+        rfcomm_task = asyncio.create_task(run_rfcomm())
+        await asyncio.sleep(5)  # Wait for 5 seconds
+        if os.path.exists("/dev/rfcomm0"):
+            await run_sudo_command("chmod", "666", "/dev/rfcomm0")
+        else:
+            print("Device file /dev/rfcomm0 does not exist")
+            return
         print('connected to rfcomm')
+        await websocket.send_json({
+            "type": "setting_up_device",
+            "message": "Connected to rfcomm"
+        })
+
         # Run the chmod command
         print('chmodding')
+        await websocket.send_json({
+            "type": "setting_up_device",
+            "message": "Changing permissions on rfcomm0"
+        })
         await run_sudo_command("chmod", "666", "/dev/rfcomm0")
         print('chmodded')
+        await websocket.send_json({
+            "type": "setting_up_device",
+            "message": "Changed permissions on rfcomm0"
+        })
     except Exception as e:
         print(f"Error setting up device: {e}")
         await websocket.close(code=1000)
@@ -266,6 +307,9 @@ async def websocket_endpoint(websocket: WebSocket):
     acquisition_thread.start()
 
     websocket_closed = False
+    await websocket.send_json({
+        "type": "acquisition_started"
+    })
 
     try:
         while True:
