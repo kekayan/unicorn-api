@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi[standard]>=0.113.0",
+    "neurokit2>=0.2.10",
     "pandas>=2.2.2",
     "scipy>=1.14.1",
+    "six>=1.16.0",
 ]

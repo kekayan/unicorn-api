@@ -97,12 +97,17 @@ def get_last_error_text():
     return unicorn_lib.UNICORN_GetLastErrorText().decode('utf-8')
 
 def get_available_devices(rescan=False):
-    count = c_uint32()
+    count = c_uint32(0)
+    
+    # First call to get the number of available devices
     result = unicorn_lib.UNICORN_GetAvailableDevices(None, ctypes.byref(count), rescan)
     if result != UNICORN_ERROR_SUCCESS:
-        raise Exception(f"Error getting available devices: {get_last_error_text()}")
+        raise Exception(f"Error getting available devices count: {get_last_error_text()}")
 
+    # Allocate buffer based on the returned count
     devices = (c_char * UNICORN_SERIAL_LENGTH_MAX * count.value)()
+    
+    # Second call to actually get the devices
     result = unicorn_lib.UNICORN_GetAvailableDevices(devices, ctypes.byref(count), rescan)
     if result != UNICORN_ERROR_SUCCESS:
         raise Exception(f"Error getting available devices: {get_last_error_text()}")
