@@ -98,21 +98,31 @@ def get_last_error_text():
 
 def get_available_devices(rescan=False):
     count = c_uint32(0)
-    
-    # First call to get the number of available devices
-    result = unicorn_lib.UNICORN_GetAvailableDevices(None, ctypes.byref(count), rescan)
-    if result != UNICORN_ERROR_SUCCESS:
-        raise Exception(f"Error getting available devices count: {get_last_error_text()}")
+    max_retries = 3
+    retry_count = 0
 
-    # Allocate buffer based on the returned count
-    devices = (c_char * UNICORN_SERIAL_LENGTH_MAX * count.value)()
-    
-    # Second call to actually get the devices
-    result = unicorn_lib.UNICORN_GetAvailableDevices(devices, ctypes.byref(count), rescan)
-    if result != UNICORN_ERROR_SUCCESS:
-        raise Exception(f"Error getting available devices: {get_last_error_text()}")
+    while retry_count < max_retries:
+        # First call to get the number of available devices
+        result = unicorn_lib.UNICORN_GetAvailableDevices(None, ctypes.byref(count), rescan)
+        if result != UNICORN_ERROR_SUCCESS:
+            raise Exception(f"Error getting available devices count: {get_last_error_text()}")
 
-    return [bytes(device).decode('utf-8').rstrip('\x00') for device in devices]
+        # Allocate buffer based on the returned count
+        devices = (c_char * UNICORN_SERIAL_LENGTH_MAX * count.value)()
+
+        # Second call to actually get the devices
+        result = unicorn_lib.UNICORN_GetAvailableDevices(devices, ctypes.byref(count), rescan)
+
+        if result == UNICORN_ERROR_SUCCESS:
+            return [bytes(device).decode('utf-8').rstrip('\x00') for device in devices]
+        elif result == UNICORN_ERROR_INVALID_PARAMETER and "Device buffer too small" in get_last_error_text():
+            # If the buffer was too small, increase the count and try again
+            count.value += 5  # Increase by 5 or another suitable number
+            retry_count += 1
+        else:
+            raise Exception(f"Error getting available devices: {get_last_error_text()}")
+
+    raise Exception("Failed to get available devices after multiple attempts")
 
 def open_device(serial):
     handle = c_uint64()
