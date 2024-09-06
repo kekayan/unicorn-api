@@ -63,7 +63,7 @@ def extract_eeg_bands(data):
         'Theta': (4, 8),
         'Alpha': (8, 12),
         'Beta': (12, 30),
-        'Gamma': (30, 60)  
+        'Gamma': (30, 100)  
     }
     band_power = {band: [] for band in bands}
 

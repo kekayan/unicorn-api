@@ -24,6 +24,8 @@ UNICORN_DEVICE_SERIAL_ID = "UN-2022.03.09"
 def eeg_band_power_extract(data, sampling_freq=250):
     data = data[:, :8]
     data = np.asarray(data)
+    # with open('data_new_unicorn2.txt', 'a') as f:
+    #     np.savetxt(f, data)
     extracted_features = extract_eeg_bands(data)
     logger.info(f"Extracted features: {extracted_features}")
     return extracted_features
@@ -62,11 +64,18 @@ def acquire_data_thread(device, data_queue, stop_event):
         logger.info("Starting acquisition...")
         unicorn.start_acquisition(device, True)
         buffer = []
+        count = 0
         while not stop_event.is_set():
             data = unicorn.get_data(device, 1)
             buffer.append(data)
             if len(buffer) == 1000:
+                if count == 0:
+                    buffer = []
+                    count += 1
+                    logger.debug("skipping for the first time")
+                    continue
                 eeg_bands = eeg_band_power_extract(np.array(buffer))
+
                 data_queue.put(json.dumps(eeg_bands))
                 logger.debug("Data sent to queue")
                 buffer.clear()
