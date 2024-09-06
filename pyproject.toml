@@ -8,6 +8,8 @@ dependencies = [
     "fastapi[standard]>=0.113.0",
     "neurokit2>=0.2.10",
     "pandas>=2.2.2",
+    "pydantic-settings>=2.4.0",
+    "pydantic>=2.9.0",
     "scipy>=1.14.1",
     "six>=1.16.0",
 ]

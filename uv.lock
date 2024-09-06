@@ -685,6 +685,19 @@ wheels = [
 ]
 
 [[package]]
+name = "pydantic-settings"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/58/14/7bfb313ccee79f97dc235721b035174af94ef4472cfe455c259cd2971f2f/pydantic_settings-2.4.0.tar.gz", hash = "sha256:ed81c3a0f46392b4d7c0a565c05884e6e54b3456e6f0fe4d8814981172dc9a88", size = 63033 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/93/46/7f90f36c1bdcf24962d2b7b0e11aba3bbd65ea7904cb2553072882a4e6b7/pydantic_settings-2.4.0-py3-none-any.whl", hash = "sha256:bb6849dc067f1687574c12a639e231f3a6feeed0a12d710c1382045c5db1c315", size = 23996 },
+]
+
+[[package]]
 name = "pygments"
 version = "2.18.0"
 source = { registry = "https://pypi.org/simple" }
@@ -952,6 +965,8 @@ dependencies = [
     { name = "fastapi", extra = ["standard"] },
     { name = "neurokit2" },
     { name = "pandas" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
     { name = "scipy" },
     { name = "six" },
 ]
@@ -961,6 +976,8 @@ requires-dist = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.113.0" },
     { name = "neurokit2", specifier = ">=0.2.10" },
     { name = "pandas", specifier = ">=2.2.2" },
+    { name = "pydantic", specifier = ">=2.9.0" },
+    { name = "pydantic-settings", specifier = ">=2.4.0" },
     { name = "scipy", specifier = ">=1.14.1" },
     { name = "six", specifier = ">=1.16.0" },
 ]

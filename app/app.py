@@ -57,7 +57,7 @@ def scan_and_connect():
 
     return UNICORN_DEVICE_SERIAL_ID
 
-def acquire_data_thread(device, data_queue, raw_data_queue):
+def acquire_data_thread(device, data_queue):
     try:
         logger.info("Starting acquisition...")
         unicorn.start_acquisition(device, True)
@@ -65,7 +65,6 @@ def acquire_data_thread(device, data_queue, raw_data_queue):
         while True:
             data = unicorn.get_data(device, 1)
             buffer.append(data)
-            # raw_data_queue.put(data)
             if len(buffer) == 1000:
                 eeg_bands = eeg_band_power_extract(np.array(buffer))
                 data_queue.put(json.dumps(eeg_bands))
@@ -85,8 +84,12 @@ def acquire_data_thread(device, data_queue, raw_data_queue):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    await websocket.send_json({
+        "type": "connected"
+    })
 
     device_serial = scan_and_connect()
+
     if not device_serial:
         await websocket.close(code=1000)
         return
@@ -95,8 +98,7 @@ async def websocket_endpoint(websocket: WebSocket):
             logger.info(f"Connected to {device_serial}")
 
             data_queue = Queue()
-            raw_data_queue = Queue()
-            acquisition_thread = threading.Thread(target=acquire_data_thread, args=(device, data_queue,raw_data_queue))
+            acquisition_thread = threading.Thread(target=acquire_data_thread, args=(device, data_queue))
             acquisition_thread.start()
 
             try:
