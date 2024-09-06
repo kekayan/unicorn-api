@@ -28,7 +28,7 @@ def eeg_band_power_extract(data, sampling_freq=250):
     logger.info(f"Extracted features: {extracted_features}")
     return extracted_features
 
-    
+
 @contextmanager
 def unicorn_device(serial_id):
     device = None
@@ -57,12 +57,12 @@ def scan_and_connect():
 
     return UNICORN_DEVICE_SERIAL_ID
 
-def acquire_data_thread(device, data_queue):
+def acquire_data_thread(device, data_queue, stop_event):
     try:
         logger.info("Starting acquisition...")
         unicorn.start_acquisition(device, True)
         buffer = []
-        while True:
+        while not stop_event.is_set():
             data = unicorn.get_data(device, 1)
             buffer.append(data)
             if len(buffer) == 1000:
@@ -93,12 +93,16 @@ async def websocket_endpoint(websocket: WebSocket):
     if not device_serial:
         await websocket.close(code=1000)
         return
+
+    stop_event = threading.Event()
+    acquisition_thread = None
+
     try:
         with unicorn_device(device_serial) as device:
             logger.info(f"Connected to {device_serial}")
 
             data_queue = Queue()
-            acquisition_thread = threading.Thread(target=acquire_data_thread, args=(device, data_queue))
+            acquisition_thread = threading.Thread(target=acquire_data_thread, args=(device, data_queue, stop_event))
             acquisition_thread.start()
 
             try:
@@ -116,11 +120,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.info("WebSocket disconnected")
             finally:
                 # Stop the acquisition thread
-                acquisition_thread.join(timeout=1)
+                stop_event.set()
+                acquisition_thread.join(timeout=5)
                 if acquisition_thread.is_alive():
                     logger.warning("Acquisition thread did not stop in time")
     except Exception as e:
         logger.exception(f"An unexpected error occurred: {e}")
     finally:
+        if stop_event:
+            stop_event.set()
+        if acquisition_thread and acquisition_thread.is_alive():
+            acquisition_thread.join(timeout=5)
         if websocket.client_state != WebSocketState.DISCONNECTED:
             await websocket.close(code=1000)
